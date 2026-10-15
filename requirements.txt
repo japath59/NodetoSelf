@@ -16,3 +16,4 @@ requests
 
 jupyter
 ipykernel
+
