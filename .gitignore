@@ -17,3 +17,7 @@ env/
 # IPYNB
 .ipynb_checkpoints/
 .DS_Store
+
+# CSVS
+data/nodes_vulnerability.csv
+data/edges_vulnerability.csv
