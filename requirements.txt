@@ -17,6 +17,3 @@ requests
 jupyter
 ipykernel
 
-json
-re
-unicodedata
