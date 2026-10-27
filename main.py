@@ -9,13 +9,14 @@ from natural_disaster_calculation import calculate_severity
 ### LOAD DATA
 nodes = pd.read_csv("data/nodes.csv")
 edges = pd.read_csv("data/edges.csv")
-disasters = pd.read_excel("data/emdat.xlsx")
 
-# Calculate disaster severity
-severity = calculate_severity(disasters)
-disasters = disasters.merge(
-    severity, on="Disaster Type", how="left", validate="many_to_one"
+# Returns filtered individual records with imputed impacts and severity.
+disasters = calculate_severity(
+    pd.read_excel("data/emdat.xlsx")
 )
+
+# Exclude records whose severity remains unavailable.
+disasters = disasters.dropna(subset=["severity_score"]).copy()
 
 # Filter natural disasters in the Americas
 americas = [
@@ -53,67 +54,89 @@ disasters["location_clean"] = disasters["Location"].apply(clean_location)
 ### MATCH DISASTERS
 def match_disasters(country, region, city):
 
-    if country.strip() == "United States":
+    country = country.strip()
+
+    if country == "United States":
         country = "United States of America"
 
-    # Filter by country
-    matches = disasters[disasters["Country"] == country.strip()].copy()
-
-    # Match city OR region
-    places = [clean_location(city), clean_location(region)]
-    places = [place for place in places if place]
-
-    if not places:
-        return matches.iloc[0:0].copy()
-
-    pattern = "|".join(
-        r"\b" + re.escape(place) + r"\b" for place in places
-    )
-
-    return matches[
-        matches["location_clean"].str.contains(pattern, na=False)
+    matches = disasters[
+        disasters["Country"] == country
     ].copy()
+
+    city = clean_location(city)
+    region = clean_location(region)
+
+    city_match = pd.Series(False, index=matches.index)
+    region_match = pd.Series(False, index=matches.index)
+
+    if city:
+        pattern = (
+            r"\b" + re.escape(city)
+            + r"\b(?!\s+(?:do|da|de|dos|das)\b)"
+        )
+        city_match = matches["location_clean"].str.contains(
+            pattern, na=False
+        )
+
+    if region:
+        region_match = matches["location_clean"].str.contains(
+            r"\b" + re.escape(region) + r"\b",
+            na=False
+        )
+
+    return matches[city_match | region_match].copy()
 
 
 ### CALCULATE VULNERABILITY
 def calculate_vulnerability(match_list, original, id_column):
-
-    # Combine and remove duplicate events
     matched = pd.concat(match_list, ignore_index=True)
+
+    # A country record may match several cities along the same route.
     matched = matched.drop_duplicates(
-        subset=[id_column, "Event ID"]
+        subset=[id_column, "DisNo."]
     )
 
-    # Calculate disaster statistics
+    # Count each event once per asset.
+    # For international routes, use the highest matched country severity.
+    matched = matched.groupby(
+        [id_column, "Event ID"], as_index=False
+    ).agg(
+        severity_score=("severity_score", "max"),
+        start_year=("Start Year", "min")
+    )
+
     summary = matched.groupby(id_column).agg(
         disaster_count=("Event ID", "nunique"),
         average_severity=("severity_score", "mean"),
-        first_year=("Start Year", "min"),
-        last_year=("Start Year", "max")
+        first_year=("start_year", "min"),
+        last_year=("start_year", "max")
     ).reset_index()
 
-    # Include all original nodes/edges
+    # Keep every node or edge, including those without matches.
     summary = original[[id_column]].merge(
         summary, on=id_column, how="left"
     )
 
-    summary["disaster_count"] = summary["disaster_count"].fillna(0)
-    summary["average_severity"] = summary["average_severity"].fillna(0)
+    summary["disaster_count"] = (
+        summary["disaster_count"].fillna(0).astype(int)
+    )
+    summary["average_severity"] = (
+        summary["average_severity"].fillna(0)
+    )
 
-    # Calculate disaster frequency
     summary["year_range"] = (
-        summary["last_year"] - summary["first_year"]
+    summary["last_year"] - summary["first_year"] + 1
     ).fillna(1).clip(lower=1)
 
     summary["annual_frequency"] = (
         summary["disaster_count"] / summary["year_range"]
     )
 
-    # Calculate vulnerability
     frequency = summary["annual_frequency"]
 
     summary["vulnerability_score"] = (
-        summary["average_severity"] * frequency / (1 + frequency)
+        summary["average_severity"]
+        * frequency / (1 + frequency)
     ).round(2)
 
     return summary
