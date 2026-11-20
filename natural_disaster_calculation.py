@@ -3,6 +3,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+DAMAGE_WEIGHT = 0.75
+DEATH_WEIGHT = 0.25
+
 
 DATA_FILE = (
     Path(__file__).resolve().parent
@@ -108,13 +111,19 @@ def impute_impacts(data):
 
 
 def normalize_log(values):
+    values = pd.to_numeric(values, errors="coerce")
+
+    if (values.dropna() < 0).any():
+        raise ValueError(
+            "Impact values cannot be negative."
+        )
+
     maximum = values.max()
 
-    if maximum <= 0:
+    if pd.isna(maximum) or maximum <= 0:
         return values * 0
 
     return 100 * np.log1p(values) / np.log1p(maximum)
-
 
 def calculate_damage_score(data):
     data = data.copy()
@@ -127,12 +136,27 @@ def calculate_damage_score(data):
 
     return data
 
+def calculate_severity(
+    data=DATA_FILE,
+    damage_weight=DAMAGE_WEIGHT,
+    death_weight=DEATH_WEIGHT,
+):
+    # Check that weights are valid
+    if not 0 <= damage_weight <= 1:
+        raise ValueError("damage_weight must be between 0 and 1")
 
-def calculate_severity(data=DATA_FILE):
+    if not 0 <= death_weight <= 1:
+        raise ValueError("death_weight must be between 0 and 1")
+
+    humanitarian_weight = 1 - damage_weight
+    affected_weight = 1 - death_weight
+
+    # Existing preprocessing
     data = prepare_data(data)
     data = impute_impacts(data)
     data = calculate_damage_score(data)
 
+    # Normalize humanitarian impacts
     data["death_score"] = normalize_log(
         data["deaths_imputed"]
     )
@@ -141,16 +165,19 @@ def calculate_severity(data=DATA_FILE):
         data["affected_imputed"]
     )
 
+    # Calculate humanitarian severity
+    data["humanitarian_score"] = (
+        death_weight * data["death_score"]
+        + affected_weight * data["affected_score"]
+    )
+
+    # Calculate overall severity
     data["severity_score"] = (
-        0.75 * data["damage_score"]
-        + 0.25 * (
-            0.70 * data["death_score"]
-            + 0.30 * data["affected_score"]
-        )
+        damage_weight * data["damage_score"]
+        + humanitarian_weight * data["humanitarian_score"]
     )
 
     return data
-
 
 if __name__ == "__main__":
     results = calculate_severity()
